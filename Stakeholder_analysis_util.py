@@ -5,22 +5,11 @@ Created on Fri Sep  2 16:58:41 2022
 @author: Jasper Bär
 """
 
-import os
 import pandas as pd
 import numpy as np
 
-current_dir = os.getcwd()
-
-topic_stakeholder_analysis_path = os.path.join(current_dir, "Topic and Stakeholder Analysis")
-utility_path = os.path.join(current_dir, "Utility")
-
-os.chdir(topic_stakeholder_analysis_path)
-
 from Count_stakeholders import stakeholder_pers, stakeholder_org
-
-os.chdir(utility_path)
-
-from Dataprep import sentiment_index, fishery_year
+from Dataprep import sentiment_index_yearly, fishery_year
 
 def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates):
     
@@ -175,7 +164,7 @@ def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list,
         
         # Sort data into 'fishery years' based on the dates quota changes
         fishery_year_data = fishery_year(data, quota_dates)
-        sentiment = sentiment_index(fishery_year_data, quota_dates)
+        sentiment = sentiment_index_yearly(fishery_year_data)
         sentiment['n_sents'] = sentiment['pos'] + sentiment['neu'] +sentiment['neg']
         
         # Calculate yearly sentiment index for sentences which include selected stakeholders (individuals)
@@ -184,7 +173,7 @@ def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list,
             stakeholders_pers_sentiment = 0  
         else:
             fishery_year_stakeholders_pers = fishery_year(stakeholders_data_pers, quota_dates)
-            stakeholders_pers_sentiment = sentiment_index(fishery_year_stakeholders_pers, quota_dates)
+            stakeholders_pers_sentiment = sentiment_index_yearly(fishery_year_stakeholders_pers)
             stakeholders_pers_sentiment['n_sents'] = stakeholders_pers_sentiment['pos'] + stakeholders_pers_sentiment['neu'] + stakeholders_pers_sentiment['neg']
         
         # Calculate yearly sentiment index for sentences which include selected stakeholders (organizations)
@@ -194,7 +183,7 @@ def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list,
             stakeholders_orgs_sentiment = 0
         else:
             fishery_year_stakeholders_orgs = fishery_year(stakeholders_data_orgs, quota_dates)
-            stakeholders_orgs_sentiment = sentiment_index(fishery_year_stakeholders_orgs, quota_dates)
+            stakeholders_orgs_sentiment = sentiment_index_yearly(fishery_year_stakeholders_orgs)
             stakeholders_orgs_sentiment['n_sents'] = stakeholders_orgs_sentiment['pos'] + stakeholders_orgs_sentiment['neu'] + stakeholders_orgs_sentiment['neg']
         
         return(stakeholders_pers_sentiment, stakeholders_orgs_sentiment)
@@ -217,7 +206,7 @@ def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list,
             DataFrames with combined stakeholder metrics.
         """
         
-        data['year'] = data['Date'].dt.year
+        data.loc[:, 'year'] = data['Date'].dt.year
         
         # Combine persons and organisations to one stakeholder group
         stakeholders_data_both = pd.concat([stakeholders_data_pers, stakeholders_data_orgs])
@@ -232,7 +221,7 @@ def stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list,
         stakeholders_both_sum['share_once'] = np.array(stakeholders_both_sum_once['Value_once'])/np.array(count_results_list)
         
         fishery_year_stakeholders_both = fishery_year(stakeholders_data_both, quota_dates)
-        stakeholders_sentiment_both = sentiment_index(fishery_year_stakeholders_both, quota_dates)
+        stakeholders_sentiment_both = sentiment_index_yearly(fishery_year_stakeholders_both)
         stakeholders_sentiment_both['n_sents'] = stakeholders_sentiment_both['pos'] + stakeholders_sentiment_both['neu'] + stakeholders_sentiment_both['neg']
                
         return(stakeholders_both_sum, stakeholders_sentiment_both)

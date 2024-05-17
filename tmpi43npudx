@@ -1,0 +1,896 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Feb 14 17:55:22 2023
+
+@author: Jasper Bär
+"""
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import datetime
+import matplotlib.dates as mdates
+from Stakeholder_analysis_util import stakeholder_analysis 
+
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+plt.rcParams['figure.figsize'] = [11, 5]
+
+data_path = r'D:\Studium\PhD\Github\Fischerei - Master\Sentiment-Analysis-Western-Baltic-Sea\Preprocessing\fishery_lemmas_sentence_labeled.csv'
+pers_path = r'D:\Studium\PhD\Github\Fischerei - Master\Sentiment-Analysis-Western-Baltic-Sea\Topic and Stakeholder Analysis\common_pers_cleaned_170223.xlsx'
+orgs_path = r'D:\Studium\PhD\Github\Fischerei - Master\Sentiment-Analysis-Western-Baltic-Sea\Topic and Stakeholder Analysis\common_org_cleaned_170223.xlsx'
+quota_path = r'D:\Studium\PhD\Fischerei\Raw Data\Complete Data\data, fish & fisheries, SD22-24.xlsx'
+start_year = 2009
+end_year = 2022
+
+def load_and_preprocess_data(data_path, pers_path, orgs_path, quota_path):
+    # Specify data types for columns
+    dtype_dict = {
+        'Unnamed: 0.1': 'int64',
+        'Unnamed: 0': 'int64',
+        'id': 'str',
+        'year': 'int64',
+        'Journal': 'str',
+        'type of newspaper (regional, national)': 'str',
+        'Date': 'str',  
+        'Category': 'str',
+        'preheading': 'str',
+        'Klima': 'float64',
+        'Naturschutz': 'float64',
+        'Fischerei': 'float64',
+        'Unnamed: 23': 'str',
+        'lemmas': 'str',
+        'text': 'str',
+        'word_count': 'int64',
+        'Label': 'int64'
+    }
+
+    # Load data with specified dtypes
+    data = pd.read_csv(data_path, dtype=dtype_dict, low_memory=False)
+    data["Date"] = pd.to_datetime(data["Date"], format='%Y-%m-%d')
+    data = data.rename(columns={'Lemmas': 'lemmas'})
+    data = data.dropna(subset=['lemmas'])
+
+    # Load and transform lists with organisations and names
+    common_pers = pd.read_excel(pers_path)
+    common_orgs = pd.read_excel(orgs_path)
+    
+    common_orgs.dropna(subset=['Name'], inplace=True)
+    common_orgs['Lemma1'] = [common_orgs['Name'].iloc[idx].lower() if name != name else name for idx, name in enumerate(common_orgs['Lemma1'])]
+    common_orgs['Abkürzung'] = [common_orgs['Abkürzung'].iloc[idx].lower() if name == name else float('nan') for idx, name in enumerate(common_orgs['Abkürzung'])]
+    
+    quota_dates = pd.read_excel(quota_path, sheet_name='dates, advice - quota ')['quota decision']
+    quota_dates = quota_dates[(quota_dates.dt.year >= start_year) & (quota_dates.dt.year <= end_year)][:-1].reset_index(drop=True)
+    
+    common_pers['Name'] = [nam.lower() for nam in common_pers['Name']]
+    common_pers['Name'] = common_pers['Name'].str.replace("von ", "", regex=False)
+    
+    # Select all stakeholders
+    stakeholders_pers_list = list(common_pers[common_pers['Stakeholder-Gruppe'].str.contains('politics|management|science|fisheries|engo|rf', na=False)]['Name'])
+    stakeholders_orgs_list = list(common_orgs[common_orgs['Stakeholder-Gruppe'].str.contains('politics|management|science|fisheries|engo|rf', na=False)]['Name'])
+
+    return data, common_pers, common_orgs, quota_dates, stakeholders_pers_list, stakeholders_orgs_list
+
+def run_stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates):
+    return stakeholder_analysis(
+        data, 
+        common_pers, 
+        common_orgs, 
+        stakeholders_pers_list, 
+        stakeholders_orgs_list, 
+        start_year, 
+        end_year, 
+        quota_dates
+    )
+
+def analyze_by_group(common_pers, common_orgs, group_name, data, start_year, end_year, quota_dates):
+    stakeholders_pers_list = list(common_pers[common_pers['Stakeholder-Gruppe'].str.contains(group_name, na=False)]['Name'])
+    stakeholders_orgs_list = list(common_orgs[common_orgs['Stakeholder-Gruppe'].str.contains(group_name, na=False)]['Name'])
+    return run_stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates)
+
+def analyze_by_governance_level(common_pers, common_orgs, level, data, start_year, end_year, quota_dates):
+    if level == 'supranational|international':
+        stakeholders_pers_list = list(common_pers[common_pers['Governance level'].str.contains(level, na=False)]['Name'])
+        stakeholders_orgs_list = list(common_orgs[common_orgs['Governance level'].str.contains(level, na=False)]['Name'])
+    else:
+        stakeholders_pers_list = list(common_pers[common_pers['Governance level'] == level]['Name'])
+        stakeholders_orgs_list = list(common_orgs[common_orgs['Governance level'] == level]['Name'])
+    return run_stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates)
+
+def calculate_summary_stats(data):
+    return data.describe()[['mean', 'std', 'min', 'max']]
+
+
+def write_summary_to_excel(summary_stats, filename):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary Statistics"
+    
+    # Write header for Table S8 (Shares by groups)
+    ws.append(["Table S8. Stakeholder shares by groups (multiple occurrences of same stakeholder per articles)"])
+    ws.append([])
+    ws.append(["Individuals"])
+    ws.append(["Yearly share politics & authorities individuals", "Mean", "S.D.", "Min", "Max"])
+    row_num = ws.max_row
+    for group in ['politics|management', 'science', 'fisheries', 'engo']:
+        stats = summary_stats[f'{group}_persons_share']
+        ws.append([f"Yearly share {group.replace('|', ' & ')} individuals"] + list(stats.values))
+        row_num += 1
+    
+    ws.append([])
+    ws.append(["Organizations"])
+    ws.append(["Yearly share Politics & Authorities Organizations", "Mean", "S.D.", "Min", "Max"])
+    row_num = ws.max_row
+    for group in ['politics|management', 'science', 'fisheries', 'engo']:
+        stats = summary_stats[f'{group}_organizations_share']
+        ws.append([f"Yearly share {group.replace('|', ' & ')} organizations"] + list(stats.values))
+        row_num += 1
+    
+    ws.append([])
+    ws.append(["Both"])
+    ws.append(["Yearly share Politics & Authorities Both", "Mean", "S.D.", "Min", "Max"])
+    row_num = ws.max_row
+    for group in ['politics|management', 'science', 'fisheries', 'engo']:
+        stats = summary_stats[f'{group}_both_share']
+        ws.append([f"Yearly share {group.replace('|', ' & ')} both"] + list(stats.values))
+        row_num += 1
+
+    # Write header for Table S9 (Shares by governance level)
+    ws.append([])
+    ws.append(["Table S9. Stakeholder shares by governance level (multiple occurrences of same stakeholder per articles)"])
+    ws.append([])
+    ws.append(["Individuals"])
+    ws.append(["Yearly share subnational individuals", "Mean", "S.D.", "Min", "Max"])
+    row_num = ws.max_row
+    for level in ['local', 'national', 'supranational|international']:
+        stats = summary_stats[f'{level}_persons_share']
+        ws.append([f"Yearly share {level.replace('|', ' & ')} individuals"] + list(stats.values))
+        row_num += 1
+    
+    ws.append([])
+    ws.append(["Organizations"])
+    ws.append(["Yearly share subnational organizations", "Mean", "S.D.", "Min", "Max"])
+    row_num = ws.max_row
+    for level in ['local', 'national', 'supranational|international']:
+        stats = summary_stats[f'{level}_organizations_share']
+        ws.append([f"Yearly share {level.replace('|', ' & ')} organizations"] + list(stats.values))
+        row_num += 1
+
+    wb.save(filename)
+    
+def main(data_path, pers_path, orgs_path, quota_path, start_year, end_year):
+    data, common_pers, common_orgs, quota_dates, stakeholders_pers_list, stakeholders_orgs_list = load_and_preprocess_data(data_path, pers_path, orgs_path, quota_path)
+    
+    # Initial stakeholder analysis
+    results = run_stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates)
+    stakeholders_pers_sum_all_persons, stakeholders_orgs_sum_all_orgs = results[9], results[10]
+    
+    # Filter stakeholders with a minimum value
+    stakeholders_orgs_sum_all_orgs = stakeholders_orgs_sum_all_orgs[stakeholders_orgs_sum_all_orgs['Value'] >= 20].copy()
+    stakeholders_pers_sum_all_persons = stakeholders_pers_sum_all_persons[stakeholders_pers_sum_all_persons['Value'] >= 20].copy()
+
+    stakeholders_pers_sum_all_persons.reset_index(inplace=True)
+    stakeholders_pers_sum_all_persons['Name'] = stakeholders_pers_sum_all_persons['Name'].str.lower().str.strip()
+    common_pers['Name'] = common_pers['Name'].str.lower().str.strip()
+
+    common_pers = pd.merge(common_pers, stakeholders_pers_sum_all_persons, on='Name', how='inner')
+
+    stakeholders_orgs_sum_all_orgs.reset_index(inplace=True)
+    stakeholders_orgs_sum_all_orgs['Name'] = stakeholders_orgs_sum_all_orgs['Name'].str.lower().str.strip()
+    common_orgs['Name'] = common_orgs['Name'].str.lower().str.strip()
+
+    common_orgs = pd.merge(common_orgs, stakeholders_orgs_sum_all_orgs, on='Name', how='inner')
+
+    stakeholders_pers_list = list(common_pers[common_pers['Stakeholder-Gruppe'].str.contains('politics|management|science|fisheries|engo', na=False)]['Name'])
+    stakeholders_orgs_list = list(common_orgs[common_orgs['Stakeholder-Gruppe'].str.contains('politics|management|science|fisheries|engo', na=False)]['Name'])
+
+    # Run stakeholder analysis again with filtered data
+    results = run_stakeholder_analysis(data, common_pers, common_orgs, stakeholders_pers_list, stakeholders_orgs_list, start_year, end_year, quota_dates)
+    
+    # Further analysis based on stakeholder groups
+    groups = ['politics|management', 'science', 'fisheries', 'engo']
+    analysis_results = {group: analyze_by_group(common_pers, common_orgs, group, data, start_year, end_year, quota_dates) for group in groups}
+    
+    # Further analysis based on governance levels
+    governance_levels = ['local', 'national', 'supranational|international']
+    governance_results = {level: analyze_by_governance_level(common_pers, common_orgs, level, data, start_year, end_year, quota_dates) for level in governance_levels}
+
+    # Summary statistics for each group and governance level
+    summary_stats = {}
+
+    for group, result in analysis_results.items():
+        stakeholders_pers_sum = result[0]
+        sentiment_pers_sum = result[1]
+        
+        stakeholders_orgs_sum = result[2]
+        sentiment_orgs_sum = result[3]
+        
+        stakeholders_both_sum = result[4]
+        sentiment_both_sum = result[5]
+        
+        summary_stats[f'{group}_persons_sentiment'] = calculate_summary_stats(sentiment_pers_sum['Sentiment Index'])
+        summary_stats[f'{group}_organizations_sentiment'] = calculate_summary_stats(sentiment_orgs_sum['Sentiment Index'])
+        summary_stats[f'{group}_both_sentiment'] = calculate_summary_stats(sentiment_orgs_sum['Sentiment Index'])
+        
+        summary_stats[f'{group}_persons_share'] = calculate_summary_stats(stakeholders_pers_sum['share'])
+        summary_stats[f'{group}_organizations_share'] = calculate_summary_stats(stakeholders_orgs_sum['share'])
+        summary_stats[f'{group}_both_share'] = calculate_summary_stats(stakeholders_both_sum['share'])
+        
+        summary_stats[f'{group}_persons_share_once'] = calculate_summary_stats(stakeholders_pers_sum['share_once'])
+        summary_stats[f'{group}_organizations_share_once'] = calculate_summary_stats(stakeholders_orgs_sum['share_once'])
+        summary_stats[f'{group}_both_share_once'] = calculate_summary_stats(stakeholders_both_sum['share_once'])
+    
+    for level, result in governance_results.items():
+        stakeholders_pers_sum = result[0]
+        sentiment_pers_sum = result[1]
+        
+        stakeholders_orgs_sum = result[2]
+        sentiment_orgs_sum = result[3]
+        
+        stakeholders_both_sum = result[4]
+        sentiment_both_sum = result[5]
+        
+        summary_stats[f'{level}_persons_sentiment'] = calculate_summary_stats(sentiment_pers_sum['Sentiment Index'])
+        summary_stats[f'{level}_organizations_sentiment'] = calculate_summary_stats(sentiment_orgs_sum['Sentiment Index'])
+        summary_stats[f'{level}_both_sentiment'] = calculate_summary_stats(sentiment_orgs_sum['Sentiment Index'])
+        
+        summary_stats[f'{level}_persons_share'] = calculate_summary_stats(stakeholders_pers_sum['share'])
+        summary_stats[f'{level}_organizations_share'] = calculate_summary_stats(stakeholders_orgs_sum['share'])
+        summary_stats[f'{level}_both_share'] = calculate_summary_stats(stakeholders_both_sum['share'])
+        
+        summary_stats[f'{level}_persons_share_once'] = calculate_summary_stats(stakeholders_pers_sum['share_once'])
+        summary_stats[f'{level}_organizations_share_once'] = calculate_summary_stats(stakeholders_orgs_sum['share_once'])
+        summary_stats[f'{level}_both_share_once'] = calculate_summary_stats(stakeholders_both_sum['share_once'])
+    
+
+    for group, result in analysis_results.items():
+        stakeholders_both_sum = result[4]
+        stakeholders_both_sum.index = pd.to_datetime(stakeholders_both_sum.index, format='%Y')
+    
+    for level, result in governance_results.items():
+        stakeholders_both_sum = result[4]
+        stakeholders_both_sum.index = pd.to_datetime(stakeholders_both_sum.index, format='%Y')
+
+    return results, analysis_results, governance_results, quota_dates
+
+if __name__ == "__main__":
+    results, analysis_results, governance_results, quota_dates, summary_stats = main(data_path, pers_path, orgs_path, quota_path, start_year, end_year)
+        
+    stakeholders_both_sum_pm = analysis_results['politics|management'][4]
+    stakeholders_both_sum_f = analysis_results['fisheries'][4]
+    stakeholders_both_sum_s = analysis_results['science'][4]
+    stakeholders_both_sum_e = analysis_results['engo'][4]
+
+    stakeholders_sentiment_both_pm = analysis_results['politics|management'][5]
+    stakeholders_sentiment_both_f = analysis_results['fisheries'][5]
+    stakeholders_sentiment_both_s = analysis_results['science'][5]
+    stakeholders_sentiment_both_e = analysis_results['engo'][5]
+    
+    stakeholders_both_sum_local = governance_results['local'][4]
+    stakeholders_both_sum_national = governance_results['national'][4]
+    stakeholders_both_sum_supranational = governance_results['supranational|international'][4]
+
+    stakeholders_sentiment_both_local = governance_results['local'][5]
+    stakeholders_sentiment_both_national = governance_results['national'][5]
+    stakeholders_sentiment_both_supranational = governance_results['supranational|international'][5]
+    
+    years = quota_dates[:-1].dt.to_period('Y').dt.to_timestamp()
+
+    ###############################################################################
+    
+    # Generate figure 4
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6), dpi=400)
+    
+    color1 = (0, 89, 84) 
+    color2 = (254, 217, 145)
+    color3 = (99, 194, 203) 
+    color4 = (244,177,131) 
+    
+    # Convert RGB to matplotlib color format
+    def convert_color(rgb):
+        return tuple([x / 255. for x in rgb])
+    
+    color1 = convert_color(color1)
+    color2 = convert_color(color2)
+    color3 = convert_color(color3)
+    color4 = convert_color(color4)
+    
+    wi = 200
+    
+    # First graph (Share)
+    total = stakeholders_both_sum_pm['share'] + stakeholders_both_sum_f['share'] + stakeholders_both_sum_s['share'] + stakeholders_both_sum_e['share']
+    
+    ax1.bar(years, stakeholders_both_sum_pm['share'] / total * 100, color=color1, label='Politics & Public Authorities', width=wi)
+    ax1.bar(years, stakeholders_both_sum_f['share'] / total * 100, bottom=stakeholders_both_sum_pm['share'] / total * 100, color=color2, label='Fishery', width=wi)
+    ax1.bar(years, stakeholders_both_sum_s['share'] / total * 100, bottom=(stakeholders_both_sum_pm['share'] + stakeholders_both_sum_f['share']) / total * 100, color=color3, label='Science', width=wi)
+    ax1.bar(years, stakeholders_both_sum_e['share'] / total * 100, bottom=(stakeholders_both_sum_pm['share'] + stakeholders_both_sum_f['share'] + stakeholders_both_sum_s['share']) / total * 100, color=color4, label='eNGO', width=wi)
+    
+    ax1.tick_params(axis='y', labelsize = 14)
+    
+    ax1.set_xticks(ax1.get_xticks()[1:-1])
+    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45)
+    
+    ax1.set_xlim(datetime.datetime(2008, 6, 1), datetime.datetime(2020, 12, 30))
+    
+    ax1.tick_params(axis='x', labelsize = 14)
+    
+    ax1.set_ylabel('Share', fontsize = 22)
+    
+    ax1.set_title('(a) Stakeholder share', y=-0.33, fontsize = 22)
+    
+    ax1.xaxis.set_major_locator(mdates.YearLocator())
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    
+    # Second graph (Sentiment)
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_pm['Sentiment Index']), color=color1, linewidth=3, linestyle='-', label='Politics & management')
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_f['Sentiment Index']), color=color2, linewidth=3, linestyle='-', label='Fishery')
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_s['Sentiment Index']), color=color3, linewidth=3, linestyle='-', label='Science')
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_e['Sentiment Index']), color=color4, linewidth=3, linestyle='-', label='eNGO') 
+    
+    ax2.tick_params(axis='y', labelsize = 14)
+    
+    ax2.set_ylabel('Sentiment', fontsize = 22)
+    
+    ax2.set_xlim(datetime.datetime(2009, 1, 1), datetime.datetime(2021, 12, 31))
+    
+    ax2.set_title('(b) Stakeholder sentiment', y=-0.33, fontsize = 22)
+    
+    ax2.set_xticks(ax2.get_xticks()[1:-1])
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45)
+    
+    ax2.tick_params(axis='x', labelsize = 14)
+    
+    ax2.xaxis.set_major_locator(mdates.YearLocator())
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    
+    ax2.set_ylim(-0.75, -0.05)
+    
+    handles, labels = ax1.get_legend_handles_labels()
+    
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), shadow=False, ncol=4, fontsize=18, frameon=False)
+    
+    plt.tight_layout(rect=[0, 0, 1, 1]) 
+    
+    plt.show()
+
+    ###############################################################################
+    
+    # Generate figure S5
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 6), dpi=400)
+    
+    color1 = (0, 60, 71) 
+    color2 = (0, 173, 189)
+    color3 = (204, 200, 192)  
+    
+    def convert_color(rgb):
+        return tuple([x / 255. for x in rgb])
+    
+    color1 = convert_color(color1)
+    color2 = convert_color(color2)
+    color3 = convert_color(color3)
+    
+    wi = 200
+    
+    total = stakeholders_both_sum_local['share'] + stakeholders_both_sum_national['share'] + stakeholders_both_sum_supranational['share']
+    
+    # First graph (Share)
+    ax1.bar(years, stakeholders_both_sum_local['share']/ total * 100, color=color1, label='Subnational', width=wi)
+    ax1.bar(years, stakeholders_both_sum_national['share']/ total * 100, bottom=stakeholders_both_sum_local['share']/ total * 100, color=color2, label='National', width=wi)
+    ax1.bar(years, stakeholders_both_sum_supranational['share']/ total * 100, bottom=stakeholders_both_sum_local['share']/ total * 100 + stakeholders_both_sum_national['share']/ total * 100, color=color3, label='International', width=wi)
+            
+    ax1.tick_params(axis='y', labelsize = 14)
+    
+    ax1.set_xticks(ax1.get_xticks()[1:-1])
+    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45)
+    
+    ax1.set_xlim(datetime.datetime(2008, 6, 1), datetime.datetime(2020, 6, 30))
+    
+    ax1.tick_params(axis='x', labelsize = 14)
+    
+    ax1.set_ylabel('Share', fontsize = 22)
+    
+    ax1.set_title('(a) Stakeholder share', y=-0.33, fontsize = 22)
+    
+    ax1.xaxis.set_major_locator(mdates.YearLocator())
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    
+    # Second graph (Sentiment)
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_local['Sentiment Index']), color=color1, linewidth=3, linestyle='-', label='Local')
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_national['Sentiment Index']), color=color2, linewidth=3, linestyle='-', label='National')
+    ax2.plot(quota_dates[:-1], np.array(stakeholders_sentiment_both_supranational['Sentiment Index']), color=color3, linewidth=3, linestyle='-', label='International')
+      
+    ax2.tick_params(axis='y', labelsize = 14)
+    
+    ax2.set_ylabel('Sentiment', fontsize = 22)
+    
+    ax2.set_xlim(datetime.datetime(2009, 1, 1), datetime.datetime(2021, 12, 31))
+    
+    ax2.set_title('(b) Stakeholder sentiment', y=-0.33, fontsize = 22)
+    
+    ax2.set_xticks(ax2.get_xticks()[1:-1])
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=45)
+    
+    ax2.tick_params(axis='x', labelsize = 14)
+    
+    ax2.xaxis.set_major_locator(mdates.YearLocator())
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    
+    handles, labels = ax1.get_legend_handles_labels()
+
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.08), shadow=False, ncol=4, fontsize=18, frameon=False)
+    
+
+    plt.tight_layout(rect=[0, 0, 1, 1]) 
+    
+    plt.show()
+
+###############################################################################
+
+import pandas as pd
+
+data = {
+    'Group': ['pers', 'orgs', 'both', 'pers_pm', 'pers_s', 'pers_f', 'pers_e', 'orgs_pm', 'orgs_s', 'orgs_f', 'orgs_e', 'both_pm', 'both_s', 'both_f', 'both_e'],
+    'Sentiment Mean': [sentiment_mean_pers, sentiment_mean_orgs, sentiment_mean_both, sentiment_pm_mean_pers, sentiment_s_mean_pers, sentiment_f_mean_pers, sentiment_e_mean_pers, sentiment_pm_mean_orgs, sentiment_s_mean_orgs, sentiment_f_mean_orgs, sentiment_e_mean_orgs, sentiment_pm_mean_both, sentiment_s_mean_both, sentiment_f_mean_both, sentiment_e_mean_both],
+}
+
+df = pd.DataFrame(data)
+df['Sentiment Mean'] = df['Sentiment Mean']
+df = df.round({'Sentiment Mean': 3})  # Round to three decimal places
+
+print(df)
+
+###
+
+data = {
+    'Group': ['pers', 'orgs', 'both', 'pers_pm', 'pers_s', 'pers_f', 'pers_e', 'orgs_pm', 'orgs_s', 'orgs_f', 'orgs_e', 'both_pm', 'both_s', 'both_f', 'both_e'],
+    'Stakeholders Mean': [stakeholders_mean_pers, stakeholders_mean_orgs, stakeholders_mean_both, stakeholders_pm_mean_pers, stakeholders_s_mean_pers, stakeholders_f_mean_pers, stakeholders_e_mean_pers, stakeholders_pm_mean_orgs, stakeholders_s_mean_orgs, stakeholders_f_mean_orgs, stakeholders_e_mean_orgs, stakeholders_pm_mean_both, stakeholders_s_mean_both, stakeholders_f_mean_both, stakeholders_e_mean_both],
+}
+
+df = pd.DataFrame(data)
+df['Stakeholders Mean'] = df['Stakeholders Mean']
+df = df.round({'Stakeholders Mean': 3})  # Round to three decimal places
+
+print(df)
+
+###
+
+data = {
+    'Group': ['pers', 'orgs', 'both', 'pers_pm', 'pers_s', 'pers_f', 'pers_e', 'orgs_pm', 'orgs_s', 'orgs_f', 'orgs_e', 'both_pm', 'both_s', 'both_f', 'both_e'],
+    'Stakeholders Mean': [stakeholders_mean_pers_once, stakeholders_mean_orgs_once, stakeholders_mean_both_once, stakeholders_pm_mean_pers_once, stakeholders_s_mean_pers_once, stakeholders_f_mean_pers_once, stakeholders_e_mean_pers_once, stakeholders_pm_mean_orgs_once, stakeholders_s_mean_orgs_once, stakeholders_f_mean_orgs_once, stakeholders_e_mean_orgs_once, stakeholders_pm_mean_both_once, stakeholders_s_mean_both_once, stakeholders_f_mean_both_once, stakeholders_e_mean_both_once],
+}
+
+df = pd.DataFrame(data)
+df['Stakeholders Mean'] = df['Stakeholders Mean']
+df = df.round({'Stakeholders Mean': 3})  # Round to three decimal places
+
+print(df)
+
+###############################################################################
+
+summary_statistics = sentiment_orgs_stakeholders_pm['Sentiment Index'].describe()
+summary_statistics = sentiment_pers_stakeholders_pm['Sentiment Index'].describe()
+
+summary_statistics = sentiment_orgs_stakeholders_e['Sentiment Index'].describe()
+summary_statistics = sentiment_pers_stakeholders_e['Sentiment Index'].describe()
+
+summary_statistics = sentiment_orgs_stakeholders_f['Sentiment Index'].describe()
+summary_statistics = sentiment_pers_stakeholders_f['Sentiment Index'].describe()
+
+summary_statistics = sentiment_orgs_stakeholders_s['Sentiment Index'].describe()
+summary_statistics = sentiment_pers_stakeholders_s['Sentiment Index'].describe()
+
+summary_statistics = (stakeholders_orgs_sum_pm['share']*100).describe()
+summary_statistics = (stakeholders_pers_sum_pm['share']*100).describe()
+
+# summary_statistics = (stakeholders_orgs_sum_e['share'].describe()
+# summary_statistics = (stakeholders_pers_sum_e['share'].describe()
+
+# summary_statistics = (stakeholders_orgs_sum_f['share'].describe()
+# summary_statistics = (stakeholders_pers_sum_f['share'].describe()
+
+# summary_statistics = (stakeholders_orgs_sum_s['share'].describe()
+# summary_statistics = (stakeholders_pers_sum_s['share'].describe()
+print(summary_statistics)
+
+summaries = {
+    'Dataset': [
+        'Sentiment Orgs PM', 'Sentiment Pers PM',
+        'Sentiment Orgs E', 'Sentiment Pers E',
+        'Sentiment Orgs F', 'Sentiment Pers F',
+        'Sentiment Orgs S', 'Sentiment Pers S',
+        'Stakeholders Orgs Sum PM', 'Stakeholders Pers Sum PM',
+        'Stakeholders Orgs Sum E', 'Stakeholders Pers Sum E',
+        'Stakeholders Orgs Sum F', 'Stakeholders Pers Sum F',
+        'Stakeholders Orgs Sum S', 'Stakeholders Pers Sum S'
+    ],
+    'Mean': [],
+    'Std': [],
+    'Min': [],
+    'Max': []
+}
+
+datasets = [
+    sentiment_orgs_stakeholders_pm, sentiment_pers_stakeholders_pm,
+    sentiment_orgs_stakeholders_e, sentiment_pers_stakeholders_e,
+    sentiment_orgs_stakeholders_f, sentiment_pers_stakeholders_f,
+    sentiment_orgs_stakeholders_s, sentiment_pers_stakeholders_s,
+    stakeholders_orgs_sum_pm, stakeholders_pers_sum_pm,
+    stakeholders_orgs_sum_e, stakeholders_pers_sum_e,
+    stakeholders_orgs_sum_f, stakeholders_pers_sum_f,
+    stakeholders_orgs_sum_s, stakeholders_pers_sum_s#,
+    # stakeholders_sentiment_both_pm,
+    # stakeholders_sentiment_both_f,
+    # stakeholders_sentiment_both_e,
+    # stakeholders_sentiment_both_s
+]
+
+# Iterate over datasets to calculate and store the statistics
+for dataset in datasets:
+    summaries['Mean'].append(dataset['Sentiment Index'].describe()['mean'] if 'Sentiment Index' in dataset else (dataset['share']*100).describe()['mean'])
+    summaries['Std'].append(dataset['Sentiment Index'].describe()['std'] if 'Sentiment Index' in dataset else (dataset['share']*100).describe()['std'])
+    summaries['Min'].append(dataset['Sentiment Index'].describe()['min'] if 'Sentiment Index' in dataset else (dataset['share']*100).describe()['min'])
+    summaries['Max'].append(dataset['Sentiment Index'].describe()['max'] if 'Sentiment Index' in dataset else (dataset['share']*100).describe()['max'])
+
+# Convert summaries dictionary to DataFrame
+summary_df = pd.DataFrame(summaries)
+
+# Display the DataFrame
+print(summary_df)
+
+###############################################################################
+
+sentiment_pers_stakeholders['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+###############################################################################
+
+stakeholders_sentiment_both_pm['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both_f['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both_s['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both_e['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+sentiment_orgs_stakeholders_pm['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders_f['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders_s['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders_e['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+sentiment_pers_stakeholders_pm['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_pers_stakeholders_f['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_pers_stakeholders_s['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_pers_stakeholders_e['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+(stakeholders_both_sum_pm['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_f['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_e['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_s['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_pers_sum_pm['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_f['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_e['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_s['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_orgs_sum_pm['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_f['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_e['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_s['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+(stakeholders_both_sum_pm['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_f['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_e['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_s['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_pers_sum_pm['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_f['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_e['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_s['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_orgs_sum_pm['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_f['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_e['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_s['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+((stakeholders_both_sum_pm['share'][2:]) + (stakeholders_both_sum_f['share'][2:]) + (stakeholders_both_sum_e['share'][2:]) + (stakeholders_both_sum_s['share'][2:])).describe()[['mean', 'std', 'min', 'max']]
+((stakeholders_pers_sum_pm['share'][2:]) + (stakeholders_pers_sum_f['share'][2:]) + (stakeholders_pers_sum_e['share'][2:]) + (stakeholders_pers_sum_s['share'][2:])).describe()[['mean', 'std', 'min', 'max']]
+((stakeholders_orgs_sum_pm['share'][2:]) + (stakeholders_orgs_sum_f['share'][2:]) + (stakeholders_orgs_sum_e['share'][2:]) + (stakeholders_orgs_sum_s['share'][2:])).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+(stakeholders_both_sum_pm['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_f['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_e['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_s['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+
+((stakeholders_both_sum_pm['share'][2:]*100) + (stakeholders_both_sum_f['share'][2:]*100) + (stakeholders_both_sum_e['share'][2:]*100) + (stakeholders_both_sum_s['share'][2:]*100)).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+# (stakeholders_both_sum_pm['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+# (stakeholders_orgs_sum_f['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+# (stakeholders_orgs_sum_e['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+# (stakeholders_orgs_sum_s['share'][2:]*100).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+(stakeholders_both_sum_local['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_national['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_supranational['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_pers_sum_local['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_national['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_supranational['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_orgs_sum_local['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_national['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_supranational['share'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+(stakeholders_both_sum_local['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_national['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_both_sum_supranational['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_pers_sum_local['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_national['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_pers_sum_supranational['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+(stakeholders_orgs_sum_local['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_national['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+(stakeholders_orgs_sum_supranational['share_once'][2:]).describe()[['mean', 'std', 'min', 'max']]
+
+###
+
+stakeholders_sentiment_both_local['Sentiment Index'][1:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both_national['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+stakeholders_sentiment_both_supranational['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+sentiment_orgs_stakeholders_local['Sentiment Index'][1:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders_national['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_orgs_stakeholders_supranational['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+sentiment_pers_stakeholders_local['Sentiment Index'][1:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_pers_stakeholders_national['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+sentiment_pers_stakeholders_supranational['Sentiment Index'][2:].describe()[['mean', 'std', 'min', 'max']]
+
+###############################################################################
+
+(stakeholders_both_sum_pm['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+(stakeholders_both_sum_f['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+(stakeholders_both_sum_e['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+(stakeholders_both_sum_s['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+
+(stakeholders_both_sum_local['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+(stakeholders_pers_sum_national['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+(stakeholders_pers_sum_supranational['share'][2:]).describe()[['mean', 'std', 'min', 'max']]['mean']
+
+# 6.39
+# 6.29
+
+###############################################################################
+
+
+def mean_shares(dataset):
+    
+    mean_shares = {}
+    
+    # Start year and end year for the calculation
+    start_year = 2006
+    end_year = 2021
+    
+    # While loop to go through the DataFrame until the last date
+    while start_year <= dataset.index.year.max():
+        # Convert start and end years to datetime for filtering
+        start_date = pd.to_datetime(f"{start_year}-01-01")
+        end_date = pd.to_datetime(f"{end_year}-12-31")
+        
+        # Filter the DataFrame for the current 5-year range
+        period_df = stakeholders_pers_sum_local_pm[(stakeholders_pers_sum_local_pm.index >= start_date) & (stakeholders_pers_sum_local_pm.index <= end_date)]
+        
+        # Calculate the mean of the 'share' column for the current period
+        period_mean = period_df['share'].mean()
+        
+        # Add the mean to the dictionary, using the period as the key
+        mean_shares[f"{start_year}-{end_year}"] = period_mean
+        
+        # Update start and end years for the next period
+        start_year += 5
+        end_year += 5
+    
+    # Convert the means dictionary to a DataFrame
+    mean_shares_df = pd.DataFrame(list(mean_shares.items()), columns=['Period', 'Mean Share'])
+    
+    print(mean_shares_df)
+ 
+# mean_shares(sentiment_orgs_stakeholders_pm)    
+
+# mean_shares(stakeholders_orgs_sum_pm)
+# mean_shares(stakeholders_pers_sum_pm)
+
+# mean_shares(stakeholders_orgs_sum_f)
+# mean_shares(stakeholders_pers_sum_f)
+
+# mean_shares(stakeholders_orgs_sum_e)
+# mean_shares(stakeholders_pers_sum_e)
+
+# mean_shares(stakeholders_orgs_sum_s)
+# mean_shares(stakeholders_pers_sum_s)
+
+sentiment_orgs_stakeholders_pm['year'] = pd.to_datetime(sentiment_orgs_stakeholders_pm['year'])
+sentiment_pers_stakeholders_pm['year'] = pd.to_datetime(sentiment_pers_stakeholders_pm['year'])
+
+def mean_sentiment_index(dataset, column_name='Sentiment Index'):
+    mean_indices = {}
+    start_year = 2006
+    end_year = 2021 
+
+    dataset['year'] = pd.to_datetime(dataset['year']).dt.year
+
+    while start_year <= end_year:
+        period_df = dataset[(dataset['year'] >= start_year) & (dataset['year'] <= end_year)]
+
+        period_mean = period_df[column_name].mean()
+
+        mean_indices[f"{start_year}-{end_year}"] = period_mean
+
+        start_year += 5
+        end_year = min(end_year + 5, dataset['year'].max())  # Ensure not to exceed the max year
+
+    mean_indices_df = pd.DataFrame(list(mean_indices.items()), columns=['Period', 'Mean Sentiment Index'])
+
+    return mean_indices_df
+
+
+def mean_share_index(dataset):
+    mean_indices = {}
+    start_year = 2006
+    end_year = 2021 
+
+    # Extract year from index and convert to integer for easier comparison
+    dataset.index = pd.to_datetime(dataset.index).year
+    dataset = dataset * 100  # Assuming the dataset needs to be multiplied by 100
+
+    while start_year <= end_year:
+        period_df = dataset[(dataset.index >= start_year) & (dataset.index <= end_year)]
+
+        period_mean = period_df.mean()
+
+        mean_indices[f"{start_year}-{end_year}"] = period_mean
+
+        start_year += 5
+        end_year = min(end_year + 5, dataset.index.max())  # Ensure not to exceed the max year in the dataset
+
+    mean_indices_df = pd.DataFrame(list(mean_indices.items()), columns=['Period', 'Mean Share (%)'])
+
+    return mean_indices_df
+
+mean_stakeholders_both_sum_pm = mean_share_index(stakeholders_both_sum_pm['share'][2:])
+mean_stakeholders_both_sum_f = mean_share_index(stakeholders_both_sum_f['share'][2:])
+mean_stakeholders_both_sum_e = mean_share_index(stakeholders_both_sum_e['share'][2:])
+mean_stakeholders_both_sum_s = mean_share_index(stakeholders_both_sum_s['share'][2:])
+
+mean_share_local = mean_share_index(stakeholders_both_sum_local['share'][2:])
+mean_share_national = mean_share_index(stakeholders_both_sum_national['share'][2:])
+mean_share_supranational = mean_share_index(stakeholders_both_sum_supranational['share'][2:])
+
+mean_sentiment_orgs_pm = mean_sentiment_index(sentiment_orgs_stakeholders_pm)
+mean_sentiment_pers_pm = mean_sentiment_index(sentiment_pers_stakeholders_pm)
+
+mean_sentiment_orgs_f = mean_sentiment_index(sentiment_orgs_stakeholders_f)
+mean_sentiment_pers_f = mean_sentiment_index(sentiment_pers_stakeholders_f)
+
+mean_sentiment_orgs_e = mean_sentiment_index(sentiment_orgs_stakeholders_e)
+mean_sentiment_pers_e = mean_sentiment_index(sentiment_pers_stakeholders_e)
+
+mean_sentiment_orgs_s = mean_sentiment_index(sentiment_orgs_stakeholders_s)
+mean_sentiment_pers_s = mean_sentiment_index(sentiment_pers_stakeholders_s)
+
+###############################################################################
+
+mean_stakeholders_sentiment_both_pm = mean_sentiment_index(stakeholders_sentiment_both_pm)
+mean_stakeholders_sentiment_both_f = mean_sentiment_index(stakeholders_sentiment_both_f)
+mean_stakeholders_sentiment_both_e = mean_sentiment_index(stakeholders_sentiment_both_e)
+mean_stakeholders_sentiment_both_s = mean_sentiment_index(stakeholders_sentiment_both_s)
+
+mean_stakeholders_sentiment_both_local = mean_sentiment_index(stakeholders_sentiment_both_local)
+mean_stakeholders_sentiment_both_national = mean_sentiment_index(stakeholders_sentiment_both_national)
+mean_stakeholders_sentiment_both_supranational = mean_sentiment_index(stakeholders_sentiment_both_supranational)
+
+###############################################################################
+
+sentiment_mean_pers = sum(sentiment_pers_stakeholders['Sentiment Index'][3:20])/len(sentiment_pers_stakeholders['Sentiment Index'][3:20])
+sentiment_mean_orgs = sum(sentiment_orgs_stakeholders['Sentiment Index'][3:20])/len(sentiment_orgs_stakeholders['Sentiment Index'][3:20])
+sentiment_mean_both = sum(stakeholders_sentiment_both['Sentiment Index'][3:20])/len(stakeholders_sentiment_both['Sentiment Index'][3:20])
+
+sentiment_pm_mean_pers = sum(sentiment_pers_stakeholders_pm['Sentiment Index'][3:20])/len(sentiment_pers_stakeholders_pm['Sentiment Index'][3:20])
+sentiment_s_mean_pers = sum(sentiment_pers_stakeholders_s['Sentiment Index'][3:20])/len(sentiment_pers_stakeholders_s['Sentiment Index'][3:20])
+sentiment_f_mean_pers = sum(sentiment_pers_stakeholders_f['Sentiment Index'][3:20])/len(sentiment_pers_stakeholders_f['Sentiment Index'][3:20])
+sentiment_e_mean_pers = sum(sentiment_pers_stakeholders_e['Sentiment Index'][3:20])/len(sentiment_pers_stakeholders_e['Sentiment Index'][3:20])
+
+sentiment_pm_mean_orgs = sum(sentiment_orgs_stakeholders_pm['Sentiment Index'][3:20])/len(sentiment_orgs_stakeholders_pm['Sentiment Index'][3:20])
+sentiment_s_mean_orgs = sum(sentiment_orgs_stakeholders_s['Sentiment Index'][3:20])/len(sentiment_orgs_stakeholders_s['Sentiment Index'][3:20])
+sentiment_f_mean_orgs = sum(sentiment_orgs_stakeholders_f['Sentiment Index'][3:20])/len(sentiment_orgs_stakeholders_f['Sentiment Index'][3:20])
+sentiment_e_mean_orgs = sum(sentiment_orgs_stakeholders_e['Sentiment Index'][3:20])/len(sentiment_orgs_stakeholders_e['Sentiment Index'][3:20])
+
+sentiment_pm_mean_both = sum(stakeholders_sentiment_both_pm['Sentiment Index'][3:20])/len(stakeholders_sentiment_both_pm['Sentiment Index'][3:20])
+sentiment_s_mean_both = sum(stakeholders_sentiment_both_s['Sentiment Index'][3:20])/len(stakeholders_sentiment_both_s['Sentiment Index'][3:20])
+sentiment_f_mean_both = sum(stakeholders_sentiment_both_f['Sentiment Index'][3:20])/len(stakeholders_sentiment_both_f['Sentiment Index'][3:20])
+sentiment_e_mean_both = sum(stakeholders_sentiment_both_e['Sentiment Index'][3:20])/len(stakeholders_sentiment_both_e['Sentiment Index'][3:20])
+
+###############################################################################
+
+stakeholders_sentiment_both_local_mean = sum(stakeholders_sentiment_both_local['Sentiment Index'])/len(stakeholders_sentiment_both_local['Sentiment Index'])
+stakeholders_sentiment_both_national_mean = sum(stakeholders_sentiment_both_national['Sentiment Index'])/len(stakeholders_sentiment_both_national['Sentiment Index'])
+stakeholders_sentiment_both_local_supranational = sum(stakeholders_sentiment_both_supranational['Sentiment Index'])/len(stakeholders_sentiment_both_supranational['Sentiment Index'])
+
+stakeholders_share_both_sum_local_mean = sum(stakeholders_both_sum_local['share'])/len(stakeholders_both_sum_local['share'])
+stakeholders_share_both_national_mean = sum(stakeholders_both_sum_national['share'])/len(stakeholders_both_sum_national['share'])
+stakeholders_share_both_local_supranational = sum(stakeholders_both_sum_supranational['share'])/len(stakeholders_both_sum_supranational['share'])
+
+local = pd.concat([stakeholders_both_sum_local['share'], pd.Series(stakeholders_sentiment_both_local['Sentiment Index'])], axis=1, ignore_index=True)
+
+local = pd.DataFrame(stakeholders_both_sum_local['share'])
+local['sentiment'] = list(stakeholders_sentiment_both_local['Sentiment Index'])
+
+national = pd.DataFrame(stakeholders_both_sum_national['share'])
+national['sentiment'] = list(stakeholders_sentiment_both_national['Sentiment Index'])
+
+supranational = pd.DataFrame(stakeholders_both_sum_supranational['share'])
+supranational['sentiment'] = list(stakeholders_sentiment_both_supranational['Sentiment Index'])
+
+###############################################################################
+
+
+stakeholders_mean_pers = sum(stakeholders_pers_sum['share'])/len(stakeholders_pers_sum['share'])
+stakeholders_mean_orgs = sum(stakeholders_orgs_sum['share'])/len(stakeholders_orgs_sum['share'])
+stakeholders_mean_both = sum(stakeholders_both_sum['share'])/len(stakeholders_both_sum['share'])
+
+stakeholders_pm_mean_pers = sum(stakeholders_pers_sum_pm['share'])/len(stakeholders_pers_sum_pm['share'])
+stakeholders_s_mean_pers = sum(stakeholders_pers_sum_s['share'])/len(stakeholders_pers_sum_s['share'])
+stakeholders_f_mean_pers = sum(stakeholders_pers_sum_f['share'])/len(stakeholders_pers_sum_f['share'])
+stakeholders_e_mean_pers = sum(stakeholders_pers_sum_e['share'])/len(stakeholders_pers_sum_e['share'])
+#stakeholders_rf_mean_pers = sum(stakeholders_pers_sum_rf['share'])/len(stakeholders_pers_sum_rf['share'])
+
+stakeholders_pm_mean_orgs = sum(stakeholders_orgs_sum_pm['share'])/len(stakeholders_orgs_sum_pm['share'])
+stakeholders_s_mean_orgs = sum(stakeholders_orgs_sum_s['share'])/len(stakeholders_orgs_sum_s['share'])
+stakeholders_f_mean_orgs = sum(stakeholders_orgs_sum_f['share'])/len(stakeholders_orgs_sum_f['share'])
+stakeholders_e_mean_orgs = sum(stakeholders_orgs_sum_e['share'])/len(stakeholders_orgs_sum_e['share'])
+#stakeholders_rf_mean_orgs = sum(stakeholders_orgs_sum_rf['share'])/len(stakeholders_orgs_sum_rf['share'])
+
+stakeholders_pm_mean_both = sum(stakeholders_both_sum_pm['share'])/len(stakeholders_both_sum_pm['share'])
+stakeholders_s_mean_both = sum(stakeholders_both_sum_s['share'])/len(stakeholders_both_sum_s['share'])
+stakeholders_f_mean_both = sum(stakeholders_both_sum_f['share'])/len(stakeholders_both_sum_f['share'])
+stakeholders_e_mean_both = sum(stakeholders_both_sum_e['share'])/len(stakeholders_both_sum_e['share'])
+#stakeholders_rf_mean_both = sum(stakeholders_both_sum_rf['share'])/len(stakeholders_both_sum_rf['share'])
+
+###############################################################################
+
+stakeholders_mean_pers_once = sum(stakeholders_pers_sum['share_once'])/len(stakeholders_pers_sum['share_once'])
+stakeholders_mean_orgs_once = sum(stakeholders_orgs_sum['share_once'])/len(stakeholders_orgs_sum['share_once'])
+stakeholders_mean_both_once = sum(stakeholders_both_sum['share_once'])/len(stakeholders_both_sum['share_once'])
+
+stakeholders_pm_mean_pers_once = sum(stakeholders_pers_sum_pm['share_once'])/len(stakeholders_pers_sum_pm['share_once'])
+stakeholders_s_mean_pers_once = sum(stakeholders_pers_sum_s['share_once'])/len(stakeholders_pers_sum_s['share_once'])
+stakeholders_f_mean_pers_once = sum(stakeholders_pers_sum_f['share_once'])/len(stakeholders_pers_sum_f['share_once'])
+stakeholders_e_mean_pers_once = sum(stakeholders_pers_sum_e['share_once'])/len(stakeholders_pers_sum_e['share_once'])
+#stakeholders_rf_mean_pers = sum(stakeholders_pers_sum_rf['share'])/len(stakeholders_pers_sum_rf['share'])
+
+stakeholders_pm_mean_orgs_once = sum(stakeholders_orgs_sum_pm['share_once'])/len(stakeholders_orgs_sum_pm['share_once'])
+stakeholders_s_mean_orgs_once = sum(stakeholders_orgs_sum_s['share_once'])/len(stakeholders_orgs_sum_s['share_once'])
+stakeholders_f_mean_orgs_once = sum(stakeholders_orgs_sum_f['share'])/len(stakeholders_orgs_sum_f['share_once'])
+stakeholders_e_mean_orgs_once = sum(stakeholders_orgs_sum_e['share'])/len(stakeholders_orgs_sum_e['share_once'])
+#stakeholders_rf_mean_orgs = sum(stakeholders_orgs_sum_rf['share'])/len(stakeholders_orgs_sum_rf['share'])
+
+stakeholders_pm_mean_both_once = sum(stakeholders_both_sum_pm['share_once'])/len(stakeholders_both_sum_pm['share_once'])
+stakeholders_s_mean_both_once = sum(stakeholders_both_sum_s['share_once'])/len(stakeholders_both_sum_s['share_once'])
+stakeholders_f_mean_both_once = sum(stakeholders_both_sum_f['share_once'])/len(stakeholders_both_sum_f['share_once'])
+stakeholders_e_mean_both_once = sum(stakeholders_both_sum_e['share_once'])/len(stakeholders_both_sum_e['share_once'])
+#stakeholders_rf_mean_both = sum(stakeholders_both_sum_rf['share'])/len(stakeholders_both_sum_rf['share'])
+
+###############################################################################

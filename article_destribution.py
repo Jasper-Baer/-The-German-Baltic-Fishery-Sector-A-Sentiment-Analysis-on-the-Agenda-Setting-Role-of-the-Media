@@ -5,14 +5,9 @@ Created on Fri Feb 25 15:00:39 2022
 @author: Jasper Bär
 """
 
-import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
-# Set the working directory
-PATH = r"D:\Studium\PhD\Github\Fischerei - Master\Sentiment-Analysis-Western-Baltic-Sea\Preprocessing"
-os.chdir(PATH)
 
 # Load the fishery data
 from fishery_data_final import load_fishery_data
@@ -41,8 +36,16 @@ dates = dates.dropna()  # Drop any NaNs
 dates = pd.to_datetime(dates)
 dates = dates[dates >= "2009-01-01"]
 
+# Generate figure 1
+year_count = data.groupby(pd.Grouper(key='Date', freq='Y')).Date.count()
+
+plt.bar(year_count.index.year, year_count, width = 0.75, color='grey') #'k-'
+plt.xticks(year_count.index.year, fontsize = 7)
+plt.ylabel('Number of published articles')
+plt.show()
+
 # Generate figure 2
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))  # Adjust figsize as needed
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))  
 
 # Plot 1: Average yearly share of articles per month
 ax1.bar(range(1, 13), month_count_prop_all['proportions'], color='0.4')
@@ -123,14 +126,14 @@ standard_errors = std_devs / np.sqrt(len(dates))
 # Compute the 95% confidence intervals
 confidence_intervals = standard_errors * 1.96
 
-# Plot 2: Average yearly share of articles per day around quota dates
-days = np.arange(-n, n + 1)
-plt.bar(days, means, yerr=confidence_intervals, capsize=5, color='grey', edgecolor='black')
-plt.set_xlabel('Days relative to date of quota advice', fontsize=14)
-plt.set_ylabel('Average yearly share of articles per day', fontsize=14)
-plt.set_title("Average daily share of articles around quota advice", y=-0.17, fontsize=14)
-plt.axhline(y=0, color='black', linewidth=0.5)
-plt.set_xticks(days)  # Set ticks for every day in the range
+# Average yearly share of articles per day around quota advice dates
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.bar(days, means, yerr=confidence_intervals, capsize=5, color='grey', edgecolor='black')
+ax.set_xlabel('Days relative to date of quota advice', fontsize=14)
+ax.set_ylabel('Average yearly share of articles per day', fontsize=14)
+ax.set_title("Average daily share of articles around quota advice", y=-0.17, fontsize=14)
+ax.axhline(y=0, color='black', linewidth=0.5)
+ax.set_xticks(days)  # Set ticks for every day in the range
 
 plt.tight_layout()  # Adjust layout to make room for all elements
 plt.show()
